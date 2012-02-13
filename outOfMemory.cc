@@ -46,6 +46,9 @@
 #include "jni.h"
 #include "jvmti.h"
 
+#include "base.h"
+#include "threads.h"
+
 
 /* Global static data */
 typedef struct {
@@ -72,55 +75,6 @@ typedef struct {
 } ClassDetails;
 
 #define REFER_DEPTH 3
-
-
-/* Deallocate JVMTI memory */
-static void deallocate(jvmtiEnv *jvmti, void *p) {
-  jvmtiError err = jvmti->Deallocate((unsigned char *)p);
-  if (err != JVMTI_ERROR_NONE) {
-      fprintf(stderr, "ERROR: JVMTI Deallocate error err=%d\n", err);
-      abort();
-  }
-}
-
-
-/* Check for NULL pointer error */
-#define CHECK_FOR_NULL(ptr)  checkForNull(ptr, __FILE__, __LINE__)
-
-static void checkForNull(void *ptr, const char *file, const int line) {
-  if (ptr == NULL) {
-    fprintf(stderr, "ERROR: NULL pointer error in %s:%d\n", file, line);
-    abort();
-  }
-}
-
-
-/* Check for JVMTI errors. */
-#define CHECK(result)  checkJvmtiError(jvmti, result, __FILE__, __LINE__)
-
-static char * getErrorName(jvmtiEnv *jvmti, jvmtiError errnum) {
-  jvmtiError err;
-  char      *name;
-
-  err = jvmti->GetErrorName(errnum, &name);
-  if (err != JVMTI_ERROR_NONE) {
-    fprintf(stderr, "ERROR: JVMTI GetErrorName error err=%d\n", err);
-    abort();
-  }
-  return name;
-}
-
-static void checkJvmtiError(jvmtiEnv *jvmti, jvmtiError err, const char *file, const int line) {
-  if (err != JVMTI_ERROR_NONE) {
-    char *name;
-
-    name = getErrorName(jvmti, err);
-    fprintf(stderr, "ERROR: JVMTI error err=%d(%s) in %s:%d\n",
-            err, name, file, line);
-    deallocate(jvmti, name);
-    abort();
-  }
-}
 
 
 /* Test if the given haystack ends with the given needle + skipHaystackChars ignored characters. */
@@ -353,7 +307,7 @@ static jvmtiIterationControl JNICALL heapObject(jlong class_tag, jlong size, jlo
 }
 
 
-/* Comparison function fo two ClassDetails - used to sort largest size first. */
+/* Comparison function for two ClassDetails - used to sort largest size first. */
 static int compareDetails(const void *p1, const void *p2) {
   return ((ClassDetails*)p2)->space - ((ClassDetails*)p1)->space;
 }
@@ -445,129 +399,6 @@ static void JNICALL printHistogram(jvmtiEnv *jvmti, FILE *out) {
 }
 
 
-/* Gets a line number. */
-static void JNICALL printFrame(jvmtiEnv* jvmti, jvmtiFrameInfo frame, FILE *out) {
-  jvmtiError err;
-  char *methodName, *className, *cleanClassName;
-  char *fileName;
-  int si, li, lineNumber;
-  jclass declaringClass;
-  jint locationCount;
-  jvmtiLineNumberEntry* locationTable;
-
-  CHECK(jvmti->GetMethodName(frame.method, &methodName, NULL, NULL));
-  CHECK(jvmti->GetMethodDeclaringClass(frame.method, &declaringClass));
-  CHECK(jvmti->GetClassSignature(declaringClass, &className, NULL));
-  err = jvmti->GetSourceFileName(declaringClass, &fileName);
-  if (err == JVMTI_ERROR_NATIVE_METHOD || err == JVMTI_ERROR_ABSENT_INFORMATION) {
-    fileName = strdup("Unknown");
-
-  } else {
-    char *temp;
-
-    CHECK(err);
-    temp = strdup(fileName);
-    deallocate(jvmti, fileName);
-    fileName = temp;
-  }
-  err = jvmti->GetLineNumberTable(frame.method, &locationCount, &locationTable);
-  if (err == JVMTI_ERROR_NATIVE_METHOD || err == JVMTI_ERROR_ABSENT_INFORMATION) {
-    lineNumber = 0;
-  } else {
-    CHECK(err);
-    lineNumber = 0;
-    for (li = 0; li < locationCount; li++) {
-      if (locationTable[li].start_location > frame.location) {
-        break;
-      }
-      lineNumber = locationTable[li].line_number;
-    }
-    deallocate(jvmti, locationTable);
-  }
-
-  cleanClassName = strdup(className + 1);
-  si = 0;
-  while (cleanClassName[si]) {
-    if (cleanClassName[si] == '/') {
-      cleanClassName[si] = '.';
-    } else if (cleanClassName[si] == ';') {
-      cleanClassName[si] = '.';
-    }
-    si++;
-  }
-
-  if (lineNumber) {
-    fprintf(out, "\tat %s%s(%s:%d)\n", cleanClassName, methodName, fileName, lineNumber);
-  } else {
-    fprintf(out, "\tat %s%s(%s)\n", cleanClassName, methodName, fileName);
-  }
-  deallocate(jvmti, methodName);
-  deallocate(jvmti, className);
-  free(fileName);
-  free(cleanClassName);
-}
-
-
-/* Prints a thread dump. */
-static void JNICALL printThreadDump(jvmtiEnv *jvmti, JNIEnv *jni, FILE *out, jthread current) {
-  if (!gdata->vmDeathCalled) {
-    jvmtiStackInfo *stack_info;
-    jint thread_count;
-    int ti;
-    jvmtiError err;
-    jvmtiThreadInfo threadInfo;
-
-    fprintf(out, "\n");
-    CHECK(jvmti->GetAllStackTraces(150, &stack_info, &thread_count));
-    fprintf(out, "Dumping thread state for %d threads\n\n", thread_count);
-    for (ti = 0; ti < thread_count; ++ti) {
-      jvmtiStackInfo *infop = &stack_info[ti];
-      jthread thread = infop->thread;
-      jint state = infop->state;
-      jvmtiFrameInfo *frames = infop->frame_buffer;
-      int fi;
-      const char *threadState;
-
-      if (state & JVMTI_THREAD_STATE_SUSPENDED) {
-        threadState = "SUSPENDED";
-      } else if (state & JVMTI_THREAD_STATE_INTERRUPTED) {
-        threadState = "INTERRUPTED";
-      } else if (state & JVMTI_THREAD_STATE_IN_NATIVE) {
-        threadState = "NATIVE";
-      } else if (state & JVMTI_THREAD_STATE_RUNNABLE) {
-        threadState = "RUNNABLE";
-      } else if (state & JVMTI_THREAD_STATE_BLOCKED_ON_MONITOR_ENTER) {
-        threadState = "BLOCKED";
-      } else if (state & JVMTI_THREAD_STATE_IN_OBJECT_WAIT) {
-        threadState = "WAITING";
-      } else if (state & JVMTI_THREAD_STATE_PARKED) {
-        threadState = "PARKED";
-      } else if (state & JVMTI_THREAD_STATE_SLEEPING) {
-        threadState = "SLEEPING";
-      } else {
-        threadState = "UNKNOWN";
-      }
-
-      jvmti->GetThreadInfo(thread, &threadInfo);
-      fprintf(out, "#%d - %s - %s", ti + 1, threadInfo.name, threadState);
-      if (thread == current || jni->IsSameObject(thread, current)) {
-        fprintf(out, " - [OOM thrower]");
-      }
-      fprintf(out, "\n");
-      deallocate(jvmti, threadInfo.name);
-
-      for (fi = 0; fi < infop->frame_count; fi++) {
-        printFrame(jvmti, frames[fi], out);
-      }
-      fprintf(out, "\n");
-    }
-    fprintf(out, "\n\n");
-    /* this one Deallocate call frees all data allocated by GetAllStackTraces */
-    deallocate(jvmti, stack_info);
-  }
-}
-
-
 /* Called when memory is exhausted. */
 static void JNICALL resourceExhausted(
     jvmtiEnv *jvmti, JNIEnv* jni, jint flags, const void* reserved, const char* description) {
@@ -612,7 +443,9 @@ static void JNICALL resourceExhausted(
 
       fprintf(out, "Printing thread dump.\n");
 
-      printThreadDump(jvmti, jni, out, current);
+      if (!gdata->vmDeathCalled) {
+        printThreadDump(jvmti, jni, out, current);
+      }
       fprintf(out, "\n\n");
       fclose(out);
     } exitAgentMonitor(jvmti);
