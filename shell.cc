@@ -173,6 +173,8 @@ static void interact(jvmtiEnv* jvmti, JNIEnv* jni, int socket) {
   gdata->activeShellSocket = socket;
 
   while (1) {
+    out.printf("> ");
+
     int length = readline(socket, buffer, MAX_LINE - 1);
     if (length < 0) {
       break;
@@ -185,9 +187,7 @@ static void interact(jvmtiEnv* jvmti, JNIEnv* jni, int socket) {
       out.printf("Try any of the following:\n\n");
       out.printf("threads");
       out.printf("histogram");
-      // out.printf("count <cls>");
-      // out.printf("size <cls>");
-      // out.printf("referrers <cls>");
+      out.printf("stats <cls>");
 
     } else if (strcmp("threads", buffer) == 0) {
       enterAgentMonitor(jvmti); {
@@ -200,6 +200,14 @@ static void interact(jvmtiEnv* jvmti, JNIEnv* jni, int socket) {
       enterAgentMonitor(jvmti); {
 
         printHistogram(jvmti, &out, false);
+
+      } exitAgentMonitor(jvmti);
+
+    } else if (strncmp("stats ", buffer, 6) == 0) {
+      enterAgentMonitor(jvmti); {
+
+        out.printf("Computing stats for '%s'\n\n", buffer + 6);
+        printClassStats(jvmti, buffer + 6, &out);
 
       } exitAgentMonitor(jvmti);
 

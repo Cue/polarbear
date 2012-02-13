@@ -287,11 +287,9 @@ static int compareDetails(const void *p1, const void *p2) {
 /* Prints a heap histogram. */
 void JNICALL printHistogram(jvmtiEnv *jvmti, Output *out, bool includeReferrers) {
   if (!gdata->vmDeathCalled && !gdata->dumpInProgress) {
-    jvmtiError    err;
-    void         *user_data;
-    jclass       *classes;
-    jint          count;
-    jint          i;
+    jclass *classes;
+    jint count;
+    jint i;
     ClassDetails *details;
 
     gdata->dumpInProgress = JNI_TRUE;
@@ -365,6 +363,56 @@ void JNICALL printHistogram(jvmtiEnv *jvmti, Output *out, bool includeReferrers)
     }
     free(details);
 
+    gdata->dumpInProgress = JNI_FALSE;
+  }
+}
+
+
+void printClassStats(jvmtiEnv *jvmti, const char *signature, Output *out) {
+  if (!gdata->vmDeathCalled && !gdata->dumpInProgress) {
+    jclass *classes;
+    jint count;
+    jint i;
+
+    gdata->dumpInProgress = JNI_TRUE;
+    gdata->totalCount = 0;
+
+    /* Get all the loaded classes */
+    CHECK(jvmti->GetLoadedClasses(&count, &classes));
+
+    /* Setup an area to hold details about these classes */
+    ClassDetails d;
+    memset(&d, 0, sizeof(ClassDetails));
+
+    for (i = 0 ; i < count ; i++) {
+      char *sig;
+      CHECK(jvmti->GetClassSignature(classes[i], &sig, NULL));
+      CHECK_FOR_NULL(sig);
+      bool same = strcmp(sig, signature) == 0;
+      deallocate(jvmti, sig);
+      if (same) {
+        d.klass = classes[i];
+        CHECK(jvmti->SetTag(classes[i], (jlong)(ptrdiff_t)(void*)&d));
+      } else {
+        CHECK(jvmti->SetTag(classes[i], (jlong)0));
+      }
+    }
+
+    deallocate(jvmti, classes);
+
+    if (d.klass == 0) {
+      out->printf("No class found with signature: '%s'\n", signature);
+
+    } else {
+      /* Iterate over the heap and count up uses of the desiered class */
+      CHECK(jvmti->IterateOverHeap(JVMTI_HEAP_OBJECT_EITHER, &heapObject, NULL));
+
+      out->printf("Count: %d\n", d.count);
+      out->printf("Space: %d\n", d.space);
+      out->printf("Retained: %d\n", getRetainedSize(jvmti, d.klass));
+    }
+
+    CHECK(jvmti->SetTag(d.klass, (jlong)0));
     gdata->dumpInProgress = JNI_FALSE;
   }
 }
