@@ -41,4 +41,6 @@
 #include "jvmti.h"
 #include "jni.h"
 
-void JNICALL printThreadDump(jvmtiEnv *jvmti, JNIEnv *jni, FILE *out, jthread current);
+#include "io.h"
+
+void JNICALL printThreadDump(jvmtiEnv *jvmti, JNIEnv *jni, Output *out, jthread current);

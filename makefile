@@ -1,6 +1,6 @@
 # Source lists
 LIBNAME=outOfMemory
-SOURCES=outOfMemory.cc base.cc threads.cc
+SOURCES=outOfMemory.cc base.cc threads.cc agentthread.cc shell.cc io.cc memory.cc
 
 LINK.cxx    = $(CXX) $(MY_CFLAGS) $(CXXFLAGS) $(CPPFLAGS) $(LDFLAGS)
 

@@ -46,7 +46,7 @@
 
 
 /* Prints a thread frame. */
-static void JNICALL printFrame(jvmtiEnv* jvmti, jvmtiFrameInfo frame, FILE *out) {
+static void JNICALL printFrame(jvmtiEnv* jvmti, jvmtiFrameInfo frame, Output *out) {
   jvmtiError err;
   char *methodName, *className, *cleanClassName;
   char *fileName;
@@ -97,9 +97,9 @@ static void JNICALL printFrame(jvmtiEnv* jvmti, jvmtiFrameInfo frame, FILE *out)
   }
 
   if (lineNumber) {
-    fprintf(out, "\tat %s%s(%s:%d)\n", cleanClassName, methodName, fileName, lineNumber);
+    out->printf( "\tat %s%s(%s:%d)\n", cleanClassName, methodName, fileName, lineNumber);
   } else {
-    fprintf(out, "\tat %s%s(%s)\n", cleanClassName, methodName, fileName);
+    out->printf( "\tat %s%s(%s)\n", cleanClassName, methodName, fileName);
   }
   deallocate(jvmti, methodName);
   deallocate(jvmti, className);
@@ -109,16 +109,16 @@ static void JNICALL printFrame(jvmtiEnv* jvmti, jvmtiFrameInfo frame, FILE *out)
 
 
 /* Prints a thread dump. */
-void JNICALL printThreadDump(jvmtiEnv *jvmti, JNIEnv *jni, FILE *out, jthread current) {
+void JNICALL printThreadDump(jvmtiEnv *jvmti, JNIEnv *jni, Output *out, jthread current) {
   jvmtiStackInfo *stack_info;
   jint thread_count;
   int ti;
   jvmtiError err;
   jvmtiThreadInfo threadInfo;
 
-  fprintf(out, "\n");
+  out->printf( "\n");
   CHECK(jvmti->GetAllStackTraces(150, &stack_info, &thread_count));
-  fprintf(out, "Dumping thread state for %d threads\n\n", thread_count);
+  out->printf( "Dumping thread state for %d threads\n\n", thread_count);
   for (ti = 0; ti < thread_count; ++ti) {
     jvmtiStackInfo *infop = &stack_info[ti];
     jthread thread = infop->thread;
@@ -148,19 +148,19 @@ void JNICALL printThreadDump(jvmtiEnv *jvmti, JNIEnv *jni, FILE *out, jthread cu
     }
 
     jvmti->GetThreadInfo(thread, &threadInfo);
-    fprintf(out, "#%d - %s - %s", ti + 1, threadInfo.name, threadState);
+    out->printf( "#%d - %s - %s", ti + 1, threadInfo.name, threadState);
     if (thread == current || jni->IsSameObject(thread, current)) {
-      fprintf(out, " - [OOM thrower]");
+      out->printf( " - [OOM thrower]");
     }
-    fprintf(out, "\n");
+    out->printf( "\n");
     deallocate(jvmti, threadInfo.name);
 
     for (fi = 0; fi < infop->frame_count; fi++) {
       printFrame(jvmti, frames[fi], out);
     }
-    fprintf(out, "\n");
+    out->printf( "\n");
   }
-  fprintf(out, "\n\n");
+  out->printf( "\n\n");
   /* this one Deallocate call frees all data allocated by GetAllStackTraces */
   deallocate(jvmti, stack_info);
 }

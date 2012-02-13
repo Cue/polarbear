@@ -44,6 +44,10 @@
 #include <stdlib.h>
 
 
+GlobalData globalData, *gdata = &globalData;
+
+
+
 /* Deallocate JVMTI memory */
 void deallocate(jvmtiEnv *jvmti, void *p) {
   jvmtiError err = jvmti->Deallocate((unsigned char *)p);
@@ -90,4 +94,16 @@ void checkJvmtiError(jvmtiEnv *jvmti, jvmtiError err, const char *file, const in
     deallocate(jvmti, name);
     abort();
   }
+}
+
+
+/* Enter agent monitor protected section */
+void enterAgentMonitor(jvmtiEnv *jvmti) {
+  CHECK(jvmti->RawMonitorEnter(gdata->lock));
+}
+
+
+/* Exit agent monitor protected section */
+void exitAgentMonitor(jvmtiEnv *jvmti) {
+  CHECK(jvmti->RawMonitorExit(gdata->lock));
 }

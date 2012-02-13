@@ -1,5 +1,5 @@
 /*
- * checks.h
+ * memory.h
  *
  * Originally based on http://hope.nyc.ny.us/~lprimak/java/demo/jvmti/heapViewer/
  *
@@ -38,51 +38,17 @@
  * nuclear facility.
  */
 
-#ifndef POLARBEAR_BASE_H
-#define POLARBEAR_BASE_H
+
+#ifndef POLARBEAR_MEMORY_H
+#define POLARBEAR_MEMORY_H
 
 
+#include "jni.h"
 #include "jvmti.h"
 
+#include "io.h"
 
-/* Global static data */
-typedef struct {
-  jboolean vmDeathCalled;
-  jboolean dumpInProgress;
-  jrawMonitorID lock;
-  int totalCount;
-
-  char *optionsCopy;
-  int retainedSizeClassCount;
-  char **retainedSizeClasses;
-
-  int shellSocket;
-  int activeShellSocket;
-} GlobalData;
-
-extern GlobalData *gdata;
-
-
-void deallocate(jvmtiEnv *jvmti, void *p);
-
-/* Check for NULL pointer error */
-#define CHECK_FOR_NULL(ptr)  checkForNull(ptr, __FILE__, __LINE__)
-
-/* Check for JVMTI errors. */
-#define CHECK(result)  checkJvmtiError(jvmti, result, __FILE__, __LINE__)
-
-
-void checkForNull(void *ptr, const char *file, const int line);
-
-void checkJvmtiError(jvmtiEnv *jvmti, jvmtiError err, const char *file, const int line);
-
-
-/* Enter agent monitor protected section */
-void enterAgentMonitor(jvmtiEnv *jvmti);
-
-
-/* Exit agent monitor protected section */
-void exitAgentMonitor(jvmtiEnv *jvmti);
+void printHistogram(jvmtiEnv *jvmti, Output *out, bool includeReferrers);
 
 
 #endif

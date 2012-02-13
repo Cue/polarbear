@@ -46,357 +46,12 @@
 #include "jni.h"
 #include "jvmti.h"
 
+#include "agentthread.h"
 #include "base.h"
+#include "io.h"
+#include "memory.h"
+#include "shell.h"
 #include "threads.h"
-
-
-/* Global static data */
-typedef struct {
-  jboolean vmDeathCalled;
-  jboolean dumpInProgress;
-  jrawMonitorID lock;
-  int totalCount;
-
-  char *optionsCopy;
-  int retainedSizeClassCount;
-  char **retainedSizeClasses;
-
-} GlobalData;
-static GlobalData globalData, *gdata = &globalData;
-
-
-/* Typedef to hold class details */
-typedef struct {
-  jclass klass;
-  char *signature;
-  int count;
-  int referLevelCount[4];
-  int space;
-} ClassDetails;
-
-#define REFER_DEPTH 3
-
-
-/* Test if the given haystack ends with the given needle + skipHaystackChars ignored characters. */
-static bool endswith(char *haystack, char *needle, int skipHaystackChars) {
-  int hLen = strlen(haystack);
-  int nLen = strlen(needle);
-
-  int offset = hLen - nLen - skipHaystackChars;
-  if (offset < 0) {
-    return false;
-  }
-
-  for (int i = nLen - 1; i >= 0; i--) {
-    if (haystack[i + offset] != needle[i]) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-
-/* Enter agent monitor protected section */
-static void enterAgentMonitor(jvmtiEnv *jvmti) {
-  CHECK(jvmti->RawMonitorEnter(gdata->lock));
-}
-
-
-/* Exit agent monitor protected section */
-static void exitAgentMonitor(jvmtiEnv *jvmti) {
-  CHECK(jvmti->RawMonitorExit(gdata->lock));
-}
-
-
-/* IterateThroughHeap callback that finds referrers to a given class. */
-static jint JNICALL referenceFinder(
-    jvmtiHeapReferenceKind reference_kind,
-    const jvmtiHeapReferenceInfo* reference_info,
-    jlong class_tag,
-    jlong referrer_class_tag,
-    jlong size,
-    jlong* tag_ptr,
-    jlong* referrer_tag_ptr,
-    jint length,
-    void* user_data) {
-  if (referrer_tag_ptr) {
-    if (class_tag == (jlong) user_data) {
-      *referrer_tag_ptr = 1;
-    }
-  }
-  return JVMTI_VISIT_OBJECTS;
-}
-
-
-/* IterateThroughHeap callback that finds shortest path from an object to an object of the given class. */
-static jint JNICALL referenceDepthCounter(
-    jvmtiHeapReferenceKind reference_kind,
-    const jvmtiHeapReferenceInfo* reference_info,
-    jlong class_tag,
-    jlong referrer_class_tag,
-    jlong size,
-    jlong* tag_ptr,
-    jlong* referrer_tag_ptr,
-    jint length,
-    void* user_data) {
-  if (referrer_tag_ptr) {
-    if (*tag_ptr) {
-      if (*referrer_tag_ptr == 0 || (*tag_ptr + 1) < *referrer_tag_ptr) {
-        *referrer_tag_ptr = *tag_ptr + 1;
-      }
-    }
-  }
-  return JVMTI_VISIT_OBJECTS;
-}
-
-
-/* Aggregates reference depth tags by class. */
-static jint JNICALL referenceDepthAggregator(
-    jlong class_tag,
-    jlong size,
-    jlong* tag_ptr,
-    jint length,
-    void* user_data) {
-  if (tag_ptr && *tag_ptr && *tag_ptr <= REFER_DEPTH) {
-    ClassDetails *d = (ClassDetails*)(void*)(ptrdiff_t)class_tag;
-    d->referLevelCount[*tag_ptr - 1] += 1;
-  }
-
-  return JVMTI_VISIT_OBJECTS;
-}
-
-
-/* Set up pointers / tag relationships for the given ClassDetails objects. */
-static void setTagPointers(jvmtiEnv *jvmti, ClassDetails *details, int classCount) {
-  /* Ensure classes are tagged correctly. */
-  for (int i = 0 ; i < classCount; i++) {
-    /* Tag this jclass */
-    CHECK(jvmti->SetTag(details[i].klass, (jlong)(ptrdiff_t)(void *)(&details[i])));
-  }
-}
-
-
-/* IterateThroughHeap callback that clears tags. */
-static jint JNICALL clearTag(jlong class_tag, jlong size, jlong* tag_ptr, jint length, void* user_data) {
-  *tag_ptr = 0;
-  return JVMTI_VISIT_OBJECTS;
-}
-
-
-/* Clear all tags. */
-static void clearTags(jvmtiEnv *jvmti) {
-  jvmtiHeapCallbacks callbacks;
-  memset(&callbacks, 0, sizeof(callbacks));
-
-  callbacks.heap_iteration_callback = clearTag;
-  CHECK(jvmti->IterateThroughHeap((jint) 0, (jclass) 0, &callbacks, (void *) NULL));
-}
-
-
-/* IterateThroughHeap callback that sets a tag to 1. */
-static jint JNICALL setTag(jlong class_tag, jlong size, jlong* tag_ptr, jint length, void* user_data) {
-  *tag_ptr = 1;
-  return JVMTI_VISIT_OBJECTS;
-}
-
-
-/* IterateThroughHeap callback that marks all elements of the given class. */
-static void mark(jvmtiEnv *jvmti, jclass klass) {
-  jvmtiHeapCallbacks callbacks;
-  memset(&callbacks, 0, sizeof(callbacks));
-  callbacks.heap_iteration_callback = setTag;
-  CHECK(jvmti->IterateThroughHeap((jint) 0, klass, &callbacks, (void *) NULL));
-}
-
-
-/* IterateThroughHeap callback that propogates marking from one set of objects to all referenced objects. */
-static jint JNICALL markReferences(
-    jvmtiHeapReferenceKind reference_kind,
-    const jvmtiHeapReferenceInfo* reference_info,
-    jlong class_tag,
-    jlong referrer_class_tag,
-    jlong size,
-    jlong* tag_ptr,
-    jlong* referrer_tag_ptr,
-    jint length,
-    void* user_data) {
-  if (referrer_tag_ptr && *referrer_tag_ptr && *tag_ptr == 0) {
-    *tag_ptr = 1;
-  }
-  return JVMTI_VISIT_OBJECTS;
-}
-
-
-/* IterateThroughHeap callback that accumulates sizes of marked objects. */
-static jint JNICALL addSizes(jlong class_tag, jlong size, jlong* tag_ptr, jint length, void* user_data) {
-  *((long *) user_data) += size;
-  return JVMTI_VISIT_OBJECTS;
-}
-
-
-/* Gets the retained size across all instances of a given class and all objects referenced by those objects. */
-static long getRetainedSize(jvmtiEnv *jvmti, jclass klass) {
-  clearTags(jvmti);
-
-  mark(jvmti, klass);
-
-  jvmtiHeapCallbacks callbacks;
-  memset(&callbacks, 0, sizeof(callbacks));
-  callbacks.heap_reference_callback = markReferences;
-
-  CHECK(jvmti->FollowReferences(0, NULL, NULL, &callbacks, 0));
-
-  long result = 0;
-  callbacks.heap_iteration_callback = addSizes;
-  CHECK(jvmti->IterateThroughHeap(JVMTI_HEAP_FILTER_UNTAGGED, 0, &callbacks, (void *)(&result)));
-
-  return result;
-}
-
-
-/* Prints a referrer summary. */
-static void printRefererSummary(jvmtiEnv *jvmti, FILE *out, ClassDetails* details, int classCount, int offset) {
-  jvmtiHeapCallbacks callbacks;
-  memset(&callbacks, 0, sizeof(callbacks));
-
-  clearTags(jvmti);
-  setTagPointers(jvmti, details, classCount);
-
-  fprintf(out, "Collecting references... ");
-  callbacks.heap_reference_callback = referenceFinder;
-  CHECK(jvmti->FollowReferences(0, NULL, NULL, &callbacks, (void *)(&details[offset])));
-
-  fprintf(out, "Finding references to references... ");
-  callbacks.heap_reference_callback = referenceDepthCounter;
-  for (int i = 0; i < REFER_DEPTH - 1; i++) {
-    CHECK(jvmti->FollowReferences(0, NULL, NULL, &callbacks, 0));
-  }
-
-  fprintf(out, "Aggregating references... ");
-  setTagPointers(jvmti, details, classCount);
-  callbacks.heap_iteration_callback = referenceDepthAggregator;
-  CHECK(jvmti->IterateThroughHeap((jint) 0, (jclass) 0, &callbacks, (void *) NULL));
-
-  fprintf(out, "\n");
-  for (int level = 0; level < REFER_DEPTH; level++) {
-    fprintf(out, "\t\tLevel %d referrers:\n", level + 1);
-    for (int j = 0 ; j < classCount; j++) {
-      int count = details[j].referLevelCount[level];
-      if (count) {
-        fprintf(out, "\t\t%10d %s\n", count, details[j].signature);
-        details[j].referLevelCount[level] = 0;
-      }
-    }
-    fprintf(out, "\n");
-  }
-
-  clearTags(jvmti);
-}
-
-
-/* IterateThroughHeap callback that aggregates counts and sizes by class. */
-static jvmtiIterationControl JNICALL heapObject(jlong class_tag, jlong size, jlong* tag_ptr, void* user_data) {
-  if (class_tag != (jlong)0) {
-    ClassDetails *d = (ClassDetails*)(void*)(ptrdiff_t)class_tag;
-    gdata->totalCount++;
-    d->count++;
-    d->space += size;
-  }
-  return JVMTI_ITERATION_CONTINUE;
-}
-
-
-/* Comparison function for two ClassDetails - used to sort largest size first. */
-static int compareDetails(const void *p1, const void *p2) {
-  return ((ClassDetails*)p2)->space - ((ClassDetails*)p1)->space;
-}
-
-
-/* Prints a heap histogram. */
-static void JNICALL printHistogram(jvmtiEnv *jvmti, FILE *out) {
-  if (!gdata->vmDeathCalled && !gdata->dumpInProgress) {
-    jvmtiError    err;
-    void         *user_data;
-    jclass       *classes;
-    jint          count;
-    jint          i;
-    ClassDetails *details;
-
-    gdata->dumpInProgress = JNI_TRUE;
-    gdata->totalCount = 0;
-
-    /* Get all the loaded classes */
-    CHECK(jvmti->GetLoadedClasses(&count, &classes));
-
-    /* Setup an area to hold details about these classes */
-    details = (ClassDetails*)calloc(sizeof(ClassDetails), count);
-    CHECK_FOR_NULL(details);
-    for (i = 0 ; i < count ; i++) {
-      char *sig;
-
-      /* Get and save the class signature */
-      CHECK(jvmti->GetClassSignature(classes[i], &sig, NULL));
-      CHECK_FOR_NULL(sig);
-      details[i].signature = strdup(sig);
-      deallocate(jvmti, sig);
-
-      details[i].klass = classes[i];
-
-      /* Tag this jclass */
-      CHECK(jvmti->SetTag(classes[i], (jlong)(ptrdiff_t)(void*)(&details[i])));
-    }
-
-    /* Iterate over the heap and count up uses of jclass */
-    CHECK(jvmti->IterateOverHeap(JVMTI_HEAP_OBJECT_EITHER, &heapObject, NULL));
-
-    /* Remove tags */
-    for (i = 0 ; i < count ; i++) {
-      /* Un-Tag this jclass */
-      CHECK(jvmti->SetTag(classes[i], (jlong)0));
-    }
-
-    /* Sort details by space used */
-    qsort(details, count, sizeof(ClassDetails), &compareDetails);
-
-    /* Print out sorted table */
-    fprintf(out, "Heap View, Total of %d objects found.\n\n", gdata->totalCount);
-
-    fprintf(out, "Space      Count      Retained   Class Signature\n");
-    fprintf(out, "---------- ---------- ---------- ----------------------\n");
-
-    for (i = 0 ; i < count ; i++) {
-      if (details[i].space == 0) {
-        break;
-      }
-      long retainedSize = 0;
-      for (int j = 0; j < gdata->retainedSizeClassCount; j++) {
-        if (endswith(details[i].signature, gdata->retainedSizeClasses[j], 1)) {
-          retainedSize = getRetainedSize(jvmti, details[i].klass);
-          break;
-        }
-      }
-      fprintf(out, "%10d %10d %10ld %s\n", details[i].space, details[i].count, retainedSize, details[i].signature);
-      if (i == 0) {
-        printRefererSummary(jvmti, out, details, count, i);
-      }
-      fflush(out);
-    }
-    fprintf(out, "---------- ---------- ----------------------\n\n");
-    fflush(out);
-
-    /* Free up all allocated space */
-    deallocate(jvmti, classes);
-    for (i = 0 ; i < count ; i++) {
-      if (details[i].signature != NULL) {
-        free(details[i].signature);
-      }
-    }
-    free(details);
-
-    gdata->dumpInProgress = JNI_FALSE;
-  }
-}
 
 
 /* Called when memory is exhausted. */
@@ -405,9 +60,11 @@ static void JNICALL resourceExhausted(
   if (flags & 0x0003) {
     enterAgentMonitor(jvmti); {
       FILE * out = fopen("/tmp/oom.log", "a");
-      fprintf(out, "About to throw an OutOfMemory error.\n");
+      FileOutput output(out);
 
-      fprintf(out, "Suspending all threads except the current one.\n");
+      output.printf("About to throw an OutOfMemory error.\n");
+
+      output.printf("Suspending all threads except the current one.\n");
 
       jthread current;
       CHECK(jvmti->GetCurrentThread(&current));
@@ -427,11 +84,11 @@ static void JNICALL resourceExhausted(
       jvmtiError *errors = (jvmtiError *)calloc(sizeof(jvmtiError), j);
       CHECK(jvmti->SuspendThreadList(j, threads, errors));
 
-      fprintf(out, "Printing a heap histogram.\n");
+      output.printf("Printing a heap histogram.\n");
 
-      printHistogram(jvmti, out);
+      printHistogram(jvmti, &output, true);
 
-      fprintf(out, "Resuming threads.\n");
+      output.printf("Resuming threads.\n");
 
       for (int i = 0; i < j; i++) {
         if (!errors[i]) {
@@ -441,12 +98,12 @@ static void JNICALL resourceExhausted(
       deallocate(jvmti, threads);
       free(errors);
 
-      fprintf(out, "Printing thread dump.\n");
+      output.printf("Printing thread dump.\n");
 
       if (!gdata->vmDeathCalled) {
-        printThreadDump(jvmti, jni, out, current);
+        printThreadDump(jvmti, jni, &output, current);
       }
-      fprintf(out, "\n\n");
+      output.printf("\n\n");
       fclose(out);
     } exitAgentMonitor(jvmti);
   }
@@ -458,6 +115,8 @@ static void JNICALL vmInit(jvmtiEnv *jvmti, JNIEnv *env, jthread thread)
 {
   enterAgentMonitor(jvmti); {
     jvmtiError err;
+
+    createAgentThread(jvmti, env, shellServer, NULL);
 
     CHECK(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_DATA_DUMP_REQUEST, NULL));
   } exitAgentMonitor(jvmti);
@@ -471,6 +130,8 @@ static void JNICALL vmDeath(jvmtiEnv *jvmti, JNIEnv *env) {
   /* Disable events */
   enterAgentMonitor(jvmti); {
     CHECK(jvmti->SetEventNotificationMode(JVMTI_DISABLE, JVMTI_EVENT_RESOURCE_EXHAUSTED, NULL));
+
+    closeShellServer();
 
     gdata->vmDeathCalled = JNI_TRUE;
   } exitAgentMonitor(jvmti);
@@ -551,9 +212,9 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM *vm, char *options, void *reserved) {
 
   /* Set callbacks and enable event notifications */
   memset(&callbacks, 0, sizeof(callbacks));
-  callbacks.VMInit                  = &vmInit;
-  callbacks.VMDeath                 = &vmDeath;
-  callbacks.ResourceExhausted       = resourceExhausted;
+  callbacks.VMInit = &vmInit;
+  callbacks.VMDeath = &vmDeath;
+  callbacks.ResourceExhausted = resourceExhausted;
   CHECK(jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks)));
   CHECK(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, NULL));
   CHECK(jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL));
