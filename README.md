@@ -30,8 +30,30 @@ Running make will build a JVMTI library.  You can enable with a command line fla
 
     -agentpath:/path/to/liboutOfMemory.so=ImportantClass,AnotherImportantClass
 
-This will produce the normal output in addition to calculating retained sizes for ImportantClass
+This will produce the normal output (see Sample Output below) in addition to calculating retained sizes for ImportantClass
 and AnotherImportantClass instances.
+
+### polarbear shell
+
+
+polarbear provides a limited repl on 8787 that allows you to interact directly.
+
+#### Note: 8787 is not secure or fault tolerant and MUST be protected in other ways
+
+
+```
+> telnet localhost 8787
+
+histogram
+
+[...]
+
+stats Lorg/apache/lucene/index/IndexWriter;
+
+[...]
+```
+
+
 
 
 ### Sample Output
