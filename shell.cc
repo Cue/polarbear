@@ -187,7 +187,7 @@ static void interact(jvmtiEnv* jvmti, JNIEnv* jni, int socket) {
       out.printf("Try any of the following:\n\n");
       out.printf("threads");
       out.printf("histogram");
-      out.printf("stats <cls>");
+      out.printf("stats <cls-signature>");
 
     } else if (strcmp("threads", buffer) == 0) {
       enterAgentMonitor(jvmti); {
