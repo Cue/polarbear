@@ -410,9 +410,10 @@ void printClassStats(jvmtiEnv *jvmti, const char *signature, Output *out) {
       out->printf("Count: %d\n", d.count);
       out->printf("Space: %d\n", d.space);
       out->printf("Retained: %d\n", getRetainedSize(jvmti, d.klass));
+
+      CHECK(jvmti->SetTag(d.klass, (jlong)0));
     }
 
-    CHECK(jvmti->SetTag(d.klass, (jlong)0));
     gdata->dumpInProgress = JNI_FALSE;
   }
 }
