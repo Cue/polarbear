@@ -187,6 +187,7 @@ static void interact(jvmtiEnv* jvmti, JNIEnv* jni, int socket) {
       out.printf("Try any of the following:\n\n");
       out.printf("threads");
       out.printf("histogram");
+      out.printf("gc");
       out.printf("stats <cls-signature>");
       out.printf("retained <cls-signature>");
       out.printf("referrers <cls-signature>");
@@ -221,6 +222,12 @@ static void interact(jvmtiEnv* jvmti, JNIEnv* jni, int socket) {
         out.printf("Computing stats for '%s'\n\n", buffer + 6);
         printClassStats(jvmti, buffer + 6, &out, true);
 
+      } exitAgentMonitor(jvmti);
+
+    } else if (strcmp("gc", buffer) == 0) {
+      enterAgentMonitor(jvmti); {
+        out.printf("Forcing garbage collection.\n");
+        CHECK(jvmti->ForceGarbageCollection());
       } exitAgentMonitor(jvmti);
 
     } else {
