@@ -63,6 +63,51 @@ typedef struct {
 #define REFER_DEPTH 3
 
 
+struct AllClassDetails {
+  jvmtiEnv *jvmti;
+  ClassDetails *details;
+  jclass *classes;
+  jint count;
+
+  AllClassDetails(jvmtiEnv *_jvmti) : jvmti(_jvmti) {
+    /* Get all the loaded classes */
+    CHECK(_jvmti->GetLoadedClasses(&this->count, &this->classes));
+
+    /* Setup an area to hold details about these classes */
+    this->details = (ClassDetails*)calloc(sizeof(ClassDetails), this->count);
+    CHECK_FOR_NULL(this->details);
+
+    jint i;
+    for (i = 0 ; i < this->count ; i++) {
+      char *sig;
+
+      /* Get and save the class signature */
+      CHECK(_jvmti->GetClassSignature(this->classes[i], &sig, NULL));
+      CHECK_FOR_NULL(sig);
+      this->details[i].signature = strdup(sig);
+      deallocate(_jvmti, sig);
+
+      this->details[i].klass = this->classes[i];
+
+      /* Tag this jclass */
+      CHECK(_jvmti->SetTag(this->classes[i], (jlong)(ptrdiff_t)(void*)(&this->details[i])));
+    }
+  }
+
+  ~AllClassDetails() {
+    jint i;
+
+    deallocate(this->jvmti, this->classes);
+    for (i = 0 ; i < this->count ; i++) {
+      if (this->details[i].signature != NULL) {
+        free(this->details[i].signature);
+      }
+    }
+    free(this->details);
+  }
+};
+
+
 /* Test if the given haystack ends with the given needle + skipHaystackChars ignored characters. */
 static bool endswith(char *haystack, char *needle, int skipHaystackChars) {
   int hLen = strlen(haystack);
@@ -287,46 +332,24 @@ static int compareDetails(const void *p1, const void *p2) {
 /* Prints a heap histogram. */
 void JNICALL printHistogram(jvmtiEnv *jvmti, Output *out, bool includeReferrers) {
   if (!gdata->vmDeathCalled && !gdata->dumpInProgress) {
-    jclass *classes;
-    jint count;
     jint i;
-    ClassDetails *details;
 
     gdata->dumpInProgress = JNI_TRUE;
     gdata->totalCount = 0;
 
-    /* Get all the loaded classes */
-    CHECK(jvmti->GetLoadedClasses(&count, &classes));
-
-    /* Setup an area to hold details about these classes */
-    details = (ClassDetails*)calloc(sizeof(ClassDetails), count);
-    CHECK_FOR_NULL(details);
-    for (i = 0 ; i < count ; i++) {
-      char *sig;
-
-      /* Get and save the class signature */
-      CHECK(jvmti->GetClassSignature(classes[i], &sig, NULL));
-      CHECK_FOR_NULL(sig);
-      details[i].signature = strdup(sig);
-      deallocate(jvmti, sig);
-
-      details[i].klass = classes[i];
-
-      /* Tag this jclass */
-      CHECK(jvmti->SetTag(classes[i], (jlong)(ptrdiff_t)(void*)(&details[i])));
-    }
+    AllClassDetails classes(jvmti);
 
     /* Iterate over the heap and count up uses of jclass */
     CHECK(jvmti->IterateOverHeap(JVMTI_HEAP_OBJECT_EITHER, &heapObject, NULL));
 
     /* Remove tags */
-    for (i = 0 ; i < count ; i++) {
+    for (i = 0 ; i < classes.count ; i++) {
       /* Un-Tag this jclass */
-      CHECK(jvmti->SetTag(classes[i], (jlong)0));
+      CHECK(jvmti->SetTag(classes.classes[i], (jlong)0));
     }
 
     /* Sort details by space used */
-    qsort(details, count, sizeof(ClassDetails), &compareDetails);
+    qsort(classes.details, classes.count, sizeof(ClassDetails), &compareDetails);
 
     /* Print out sorted table */
     out->printf("Heap View, Total of %d objects found.\n\n", gdata->totalCount);
@@ -334,82 +357,64 @@ void JNICALL printHistogram(jvmtiEnv *jvmti, Output *out, bool includeReferrers)
     out->printf("Space      Count      Retained   Class Signature\n");
     out->printf("---------- ---------- ---------- ----------------------\n");
 
-    for (i = 0 ; i < count ; i++) {
-      if (details[i].space == 0) {
+    for (i = 0 ; i < classes.count ; i++) {
+      if (classes.details[i].space == 0) {
         break;
       }
       long retainedSize = 0;
       for (int j = 0; j < gdata->retainedSizeClassCount; j++) {
-        if (endswith(details[i].signature, gdata->retainedSizeClasses[j], 1)) {
-          retainedSize = getRetainedSize(jvmti, details[i].klass);
+        if (endswith(classes.details[i].signature, gdata->retainedSizeClasses[j], 1)) {
+          retainedSize = getRetainedSize(jvmti, classes.details[i].klass);
           break;
         }
       }
-      out->printf("%10d %10d %10ld %s\n", details[i].space, details[i].count, retainedSize, details[i].signature);
+      out->printf("%10d %10d %10ld %s\n",
+          classes.details[i].space, classes.details[i].count, retainedSize, classes.details[i].signature);
       if (i == 0 && includeReferrers) {
-        printRefererSummary(jvmti, out, details, count, i);
+        printRefererSummary(jvmti, out, classes.details, classes.count, i);
       }
       out->flush();
     }
     out->printf("---------- ---------- ----------------------\n\n");
     out->flush();
 
-    /* Free up all allocated space */
-    deallocate(jvmti, classes);
-    for (i = 0 ; i < count ; i++) {
-      if (details[i].signature != NULL) {
-        free(details[i].signature);
-      }
-    }
-    free(details);
-
     gdata->dumpInProgress = JNI_FALSE;
   }
 }
 
 
-void printClassStats(jvmtiEnv *jvmti, const char *signature, Output *out) {
+void printClassStats(jvmtiEnv *jvmti, const char *signature, Output *out, bool details) {
   if (!gdata->vmDeathCalled && !gdata->dumpInProgress) {
-    jclass *classes;
-    jint count;
-    jint i;
+    jint offset;
 
     gdata->dumpInProgress = JNI_TRUE;
     gdata->totalCount = 0;
 
     /* Get all the loaded classes */
-    CHECK(jvmti->GetLoadedClasses(&count, &classes));
+    AllClassDetails classes(jvmti);
 
-    /* Setup an area to hold details about these classes */
-    ClassDetails d;
-    memset(&d, 0, sizeof(ClassDetails));
-
-    for (i = 0 ; i < count ; i++) {
-      char *sig;
-      CHECK(jvmti->GetClassSignature(classes[i], &sig, NULL));
-      CHECK_FOR_NULL(sig);
-      bool same = strcmp(sig, signature) == 0;
-      deallocate(jvmti, sig);
-      if (same) {
-        d.klass = classes[i];
-        CHECK(jvmti->SetTag(classes[i], (jlong)(ptrdiff_t)(void*)&d));
-      } else {
-        CHECK(jvmti->SetTag(classes[i], (jlong)0));
+    for (offset = 0 ; offset < classes.count; offset++) {
+      ClassDetails d = classes.details[offset];
+      if (d.signature != 0 && strcmp(d.signature, signature) == 0) {
+        break;
       }
     }
 
-    deallocate(jvmti, classes);
-
-    if (d.klass == 0) {
+    if (offset == classes.count) {
       out->printf("No class found with signature: '%s'\n", signature);
 
     } else {
-      /* Iterate over the heap and count up uses of the desiered class */
+      /* Iterate over the heap and count up uses of the desired class */
       CHECK(jvmti->IterateOverHeap(JVMTI_HEAP_OBJECT_EITHER, &heapObject, NULL));
 
+      ClassDetails d = classes.details[offset];
       out->printf("Count: %d\n", d.count);
       out->printf("Space: %d\n", d.space);
-      out->printf("Retained: %d\n", getRetainedSize(jvmti, d.klass));
+      if (details) {
+        out->printf("Retained: %d\n", getRetainedSize(jvmti, d.klass));
+        out->printf("Referrers: \n");
+        printRefererSummary(jvmti, out, classes.details, classes.count, offset);
+      }
 
       CHECK(jvmti->SetTag(d.klass, (jlong)0));
     }

@@ -164,3 +164,42 @@ void JNICALL printThreadDump(jvmtiEnv *jvmti, JNIEnv *jni, Output *out, jthread 
   /* this one Deallocate call frees all data allocated by GetAllStackTraces */
   deallocate(jvmti, stack_info);
 }
+
+
+ThreadSuspension::ThreadSuspension(jvmtiEnv *_jvmti, JNIEnv *jni) : jvmti(_jvmti) {
+  CHECK(_jvmti->GetCurrentThread(&this->current));
+
+  jint threadCount;
+  CHECK(_jvmti->GetAllThreads(&threadCount, &this->threads));
+
+  int j = 0;
+  for (int i = 0; i < threadCount; i++) {
+    if (!jni->IsSameObject(this->threads[i], this->current)) {
+      this->threads[j] = this->threads[i];
+      j++;
+    }
+  }
+
+  this->errors = (jvmtiError *)calloc(sizeof(jvmtiError), j);
+  CHECK(_jvmti->SuspendThreadList(j, threads, this->errors));
+  this->changedCount = j;
+}
+
+
+void ThreadSuspension::resume() {
+  int j;
+  if (this->threads) {
+    for (int i = 0; i < this->changedCount; i++) {
+      if (!this->errors[i]) {
+        CHECK(this->jvmti->ResumeThread(threads[i]));
+      }
+    }
+    free(this->errors);
+    deallocate(this->jvmti, this->threads);
+    this->threads = 0;
+  }
+}
+
+ThreadSuspension::~ThreadSuspension() {
+  this->resume();
+}

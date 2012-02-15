@@ -66,23 +66,7 @@ static void JNICALL resourceExhausted(
 
       output.printf("Suspending all threads except the current one.\n");
 
-      jthread current;
-      CHECK(jvmti->GetCurrentThread(&current));
-
-      jint threadCount;
-      jthread *threads;
-      CHECK(jvmti->GetAllThreads(&threadCount, &threads));
-
-      int j = 0;
-      for (int i = 0; i < threadCount; i++) {
-        if (!jni->IsSameObject(threads[i], current)) {
-          threads[j] = threads[i];
-          j++;
-        }
-      }
-
-      jvmtiError *errors = (jvmtiError *)calloc(sizeof(jvmtiError), j);
-      CHECK(jvmti->SuspendThreadList(j, threads, errors));
+      ThreadSuspension threads(jvmti, jni);
 
       output.printf("Printing a heap histogram.\n");
 
@@ -90,18 +74,12 @@ static void JNICALL resourceExhausted(
 
       output.printf("Resuming threads.\n");
 
-      for (int i = 0; i < j; i++) {
-        if (!errors[i]) {
-          CHECK(jvmti->ResumeThread(threads[i]));
-        }
-      }
-      deallocate(jvmti, threads);
-      free(errors);
+      threads.resume();
 
       output.printf("Printing thread dump.\n");
 
       if (!gdata->vmDeathCalled) {
-        printThreadDump(jvmti, jni, &output, current);
+        printThreadDump(jvmti, jni, &output, threads.current);
       }
       output.printf("\n\n");
       fclose(out);

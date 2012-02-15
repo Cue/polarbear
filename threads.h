@@ -38,9 +38,30 @@
  * nuclear facility.
  */
 
+#ifndef POLARBEAR_THREADS_H
+#define POLARBEAR_THREADS_H
+
+
 #include "jvmti.h"
 #include "jni.h"
 
 #include "io.h"
 
 void JNICALL printThreadDump(jvmtiEnv *jvmti, JNIEnv *jni, Output *out, jthread current);
+
+struct ThreadSuspension {
+  jvmtiEnv* jvmti;
+  jthread current;
+  jthread *threads;
+  jvmtiError *errors;
+  int changedCount;
+
+  ThreadSuspension(jvmtiEnv *_jvmti, JNIEnv *jni);
+
+  void resume();
+
+  ~ThreadSuspension();
+};
+
+
+#endif

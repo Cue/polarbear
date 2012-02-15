@@ -50,7 +50,7 @@
 
 void printHistogram(jvmtiEnv *jvmti, Output *out, bool includeReferrers);
 
-void printClassStats(jvmtiEnv *jvmti, const char *signature, Output *out);
+void printClassStats(jvmtiEnv *jvmti, const char *signature, Output *out, bool retainedSize);
 
 
 #endif
