@@ -105,6 +105,16 @@ struct AllClassDetails {
     }
     free(this->details);
   }
+
+  jint getSignatureOffset(const char * signature) {
+    for (jint offset = 0 ; offset < this->count; offset++) {
+      ClassDetails d = this->details[offset];
+      if (d.signature != 0 && strcmp(d.signature, signature) == 0) {
+        return offset;
+      }
+    }
+    return -1;
+  }
 };
 
 
@@ -384,41 +394,53 @@ void JNICALL printHistogram(jvmtiEnv *jvmti, Output *out, bool includeReferrers)
 
 
 void printClassStats(jvmtiEnv *jvmti, const char *signature, Output *out, bool details) {
-  if (!gdata->vmDeathCalled && !gdata->dumpInProgress) {
-    jint offset;
-
-    gdata->dumpInProgress = JNI_TRUE;
-    gdata->totalCount = 0;
-
-    /* Get all the loaded classes */
-    AllClassDetails classes(jvmti);
-
-    for (offset = 0 ; offset < classes.count; offset++) {
-      ClassDetails d = classes.details[offset];
-      if (d.signature != 0 && strcmp(d.signature, signature) == 0) {
-        break;
-      }
-    }
-
-    if (offset == classes.count) {
-      out->printf("No class found with signature: '%s'\n", signature);
-
-    } else {
-      /* Iterate over the heap and count up uses of the desired class */
-      CHECK(jvmti->IterateOverHeap(JVMTI_HEAP_OBJECT_EITHER, &heapObject, NULL));
-
-      ClassDetails d = classes.details[offset];
-      out->printf("Count: %d\n", d.count);
-      out->printf("Space: %d\n", d.space);
-      if (details) {
-        out->printf("Retained: %d\n", getRetainedSize(jvmti, d.klass));
-        out->printf("Referrers: \n");
-        printRefererSummary(jvmti, out, classes.details, classes.count, offset);
-      }
-
-      CHECK(jvmti->SetTag(d.klass, (jlong)0));
-    }
-
-    gdata->dumpInProgress = JNI_FALSE;
+  if (gdata->vmDeathCalled || gdata->dumpInProgress) {
+    return;
   }
+
+  gdata->dumpInProgress = JNI_TRUE;
+
+  /* Get all the loaded classes */
+  AllClassDetails classes(jvmti);
+  jint offset = classes.getSignatureOffset(signature);
+
+  if (offset == -1) {
+    out->printf("No class found with signature: '%s'\n", signature);
+
+  } else {
+    /* Iterate over the heap and count up uses of the desired class */
+    CHECK(jvmti->IterateOverHeap(JVMTI_HEAP_OBJECT_EITHER, &heapObject, NULL));
+
+    ClassDetails d = classes.details[offset];
+    out->printf("Count: %d\n", d.count);
+    out->printf("Space: %d\n", d.space);
+    if (details) {
+      out->printf("Retained: %d\n", getRetainedSize(jvmti, d.klass));
+    }
+
+    CHECK(jvmti->SetTag(d.klass, (jlong)0));
+  }
+
+  gdata->dumpInProgress = JNI_FALSE;
+}
+
+
+void printReferrers(jvmtiEnv *jvmti, const char *signature, Output *out) {
+  if (gdata->vmDeathCalled || gdata->dumpInProgress) {
+    return;
+  }
+
+  gdata->dumpInProgress = JNI_TRUE;
+
+  /* Get all the loaded classes */
+  AllClassDetails classes(jvmti);
+  jint offset = classes.getSignatureOffset(signature);
+
+  if (offset == -1) {
+    out->printf("No class found with signature: '%s'\n", signature);
+  } else {
+    printRefererSummary(jvmti, out, classes.details, classes.count, offset);
+  }
+
+  gdata->dumpInProgress = JNI_FALSE;
 }

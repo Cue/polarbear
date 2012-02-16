@@ -189,7 +189,7 @@ static void interact(jvmtiEnv* jvmti, JNIEnv* jni, int socket) {
       out.printf("histogram");
       out.printf("gc");
       out.printf("stats <cls-signature>");
-      out.printf("retained <cls-signature>");
+      out.printf("count <cls-signature>");
       out.printf("referrers <cls-signature>");
 
     } else if (strcmp("threads", buffer) == 0) {
@@ -223,6 +223,16 @@ static void interact(jvmtiEnv* jvmti, JNIEnv* jni, int socket) {
         printClassStats(jvmti, buffer + 6, &out, true);
 
       } exitAgentMonitor(jvmti);
+
+    } else if (strncmp("referrers ", buffer, 10) == 0) {
+      enterAgentMonitor(jvmti); {
+        ThreadSuspension threads(jvmti, jni);
+
+        out.printf("Computing stats for '%s'\n\n", buffer + 10);
+        printReferrers(jvmti, buffer + 10, &out);
+
+      } exitAgentMonitor(jvmti);
+
 
     } else if (strcmp("gc", buffer) == 0) {
       enterAgentMonitor(jvmti); {
